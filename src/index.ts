@@ -1,8 +1,6 @@
 import {BotInstance} from './bot';
 import {randomInt} from 'crypto';
 
-const gc = process.argv[2];
-
 /**
  * Profile information for JKLM
  */
@@ -28,5 +26,5 @@ export class Profile {
     }
 }
 
+new BotInstance('VHCJ');
 
-new BotInstance(gc);

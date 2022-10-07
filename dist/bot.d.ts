@@ -8,6 +8,7 @@ export declare class BotInstance {
     profile: Profile;
     language: 'English' | 'Spanish';
     constructor(gameId: string);
+    log(message: any): void;
 }
 export declare class MainSocket {
     socket: client | null;

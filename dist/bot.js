@@ -13,12 +13,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GameSocket = exports.MainSocket = exports.BotInstance = exports.words = void 0;
-const fs_1 = require("fs");
 const _1 = require(".");
 const axios_1 = __importDefault(require("axios"));
 const websocket_1 = require("websocket");
-const fs_2 = require("fs");
+const fs_1 = require("fs");
+const IMITATE_HUMAN = false;
 const WebSocketClient = websocket_1.client;
+const TIME = new Date().getTime();
 exports.words = (0, fs_1.readFileSync)('../assets/words.txt').toString().split('\n').map((word) => word.toLowerCase());
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +44,13 @@ class BotInstance {
             console.info(`Attempting to connect to game websocket for https://jklm.fun/${gameId}`);
             this.gameSocket = new GameSocket(`wss://${bird}.jklm.fun/socket.io/?EIO=4&transport=websocket`, this);
         }))();
+    }
+    log(message) {
+        const t = new Date().getHours().toString().padStart(2, '0') + ':' +
+            new Date().getMinutes().toString().padStart(2, '0') + ':' +
+            new Date().getSeconds().toString().padStart(2, '0') + '.' +
+            new Date().getMilliseconds().toString().padStart(3, '0');
+        (0, fs_1.appendFileSync)(`../logs/${TIME}-${this.game}.log`, `[${t}] ${message}\n`);
     }
 }
 exports.BotInstance = BotInstance;
@@ -75,7 +83,7 @@ class MainSocket {
         this.socket.connect(url);
     }
     send(op, ...data) {
-        log(`↑1 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
+        this.bot.log(`↑1 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
         this.socketClient.send(`${op.toString()}${data && data.length > 0 ? JSON.stringify(data) : ''}`);
     }
     op0(data) {
@@ -124,7 +132,15 @@ class MainSocket {
                 if (command === 'c') {
                     console.log(args, flags);
                     const syl = args.s ? args.s.toLowerCase() : this.bot.gameSocket.syllable;
-                    const valid = findWord(syl, exports.words).sort(() => .5 - Math.random()).map((val) => val.toUpperCase());
+                    let valid = findWord(syl, exports.words).sort(() => .5 - Math.random()).map((val) => val.toUpperCase());
+                    if (!syl) {
+                        this.send(42, 'chat', 'No syllable provided!');
+                        return;
+                    }
+                    if (args.sort === 'length')
+                        valid = valid.sort((a, b) => b.length - a.length);
+                    if (args.sort === 'alphabetical')
+                        valid = valid.sort((a, b) => a.localeCompare(b));
                     this.send(42, 'chat', `Words for ${syl.toUpperCase()}: ${valid.slice(0, 10).join(', ')}`.substring(0, 300));
                 }
             }
@@ -152,7 +168,7 @@ class GameSocket {
                 if (!('utf8Data' in message))
                     return;
                 const [opcode, data] = message.utf8Data.match(/(\d+)(.*)/).slice(1);
-                log(`↓2 ${opcode}${data}`);
+                bot.log(`↓2 ${opcode}${data}`);
                 const op = Number(opcode);
                 const json = data ? JSON.parse(`${data}`) : {};
                 if (op === 0)
@@ -168,7 +184,7 @@ class GameSocket {
         this.socket.connect(url);
     }
     send(op, ...data) {
-        log(`↑2 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
+        this.bot.log(`↑2 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
         this.socketClient.send(`${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
     }
     op0(data) {
@@ -184,6 +200,9 @@ class GameSocket {
         data;
     }
     op42(data) {
+        if (data[0] === 'clearUsedWords') {
+            this.currentWords = exports.words.slice();
+        }
         if (data[0] === 'setup') {
             const { milestone, selfPeerId } = data[1];
             this.peerId = selfPeerId;
@@ -209,10 +228,11 @@ class GameSocket {
         }
         if (data[0] === 'correctWord') {
             const { playerPeerId, bonusLetters } = data[1];
+            this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, ''));
             if (!exports.words.includes(this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, ''))) {
                 console.log(`[!] New word: ${this.lastSeenWords[playerPeerId]}`);
                 exports.words.push(this.lastSeenWords[playerPeerId]);
-                (0, fs_2.appendFileSync)('../assets/words.txt', `\n${this.lastSeenWords[playerPeerId]}`);
+                (0, fs_1.appendFileSync)('../assets/words.txt', `\n${this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, '')}`);
             }
             if (playerPeerId === this.peerId)
                 this.mybonusletters = this.bonus.filter((letter) => !bonusLetters.includes(letter));
@@ -220,12 +240,15 @@ class GameSocket {
         if (data[0] === 'failWord') {
             const [peer, reason] = data.slice(1);
             if (reason === 'alreadyUsed') {
-                console.log(this.lastSeenWords[peer], 'was already used');
-                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer]);
+                console.log('[!]', this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''), 'was already used');
+                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''));
+                console.log(this.currentWords.includes(this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, '')));
             }
-            if (reason === 'notInDictionary') {
-                console.log(this.lastSeenWords[peer], 'is not in the dictionary');
-                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer]);
+            if (reason === 'notInDictionary' && peer === this.peerId) {
+                console.log('[!]', this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''), 'is not in the dictionary');
+                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''));
+                const w = (0, fs_1.readFileSync)('../assets/words.txt', 'utf-8').split('\n').filter((word) => word !== this.lastSeenWords[peer]).map((word) => word.toLowerCase()).join('\n');
+                (0, fs_1.writeFileSync)('../assets/words.txt', w);
             }
             if (peer === this.peerId) {
                 this.submit();
@@ -242,14 +265,13 @@ class GameSocket {
     submit() {
         return __awaiter(this, void 0, void 0, function* () {
             const words = findWord(this.syllable, this.currentWords);
-            console.log(this.mybonusletters);
             let max = 0;
             let maxCandidate = [];
             for (const word of words) {
-                let score = 0;
+                let score = word.length;
                 this.mybonusletters.forEach((letter) => {
                     if (word.includes(letter))
-                        score++;
+                        score += 5;
                 });
                 if (score > max) {
                     max = score;
@@ -265,12 +287,14 @@ class GameSocket {
                 return;
             }
             const chosenWord = maxCandidate[Math.floor(Math.random() * maxCandidate.length)];
-            yield sleep(200);
-            for (let i = 0; i < chosenWord.length; i++) {
-                this.send(42, 'setWord', chosenWord.substring(0, i + 1), false);
-                yield sleep(Math.random() * 20 + 65);
+            if (IMITATE_HUMAN) {
+                yield sleep(200);
+                for (let i = 0; i < chosenWord.length; i++) {
+                    this.send(42, 'setWord', chosenWord.substring(0, i + 1), false);
+                    yield sleep(Math.random() * 20 + 65);
+                }
+                yield sleep(Math.random() * 20 + 40);
             }
-            yield sleep(Math.random() * 20 + 40);
             this.send(42, 'setWord', chosenWord, true);
         });
     }
@@ -278,13 +302,5 @@ class GameSocket {
 exports.GameSocket = GameSocket;
 function findWord(syllable, currentWords) {
     return currentWords.filter((word) => word.includes(syllable));
-}
-const TIME = new Date().getTime();
-function log(message) {
-    const t = new Date().getHours().toString().padStart(2, '0') + ':' +
-        new Date().getMinutes().toString().padStart(2, '0') + ':' +
-        new Date().getSeconds().toString().padStart(2, '0') + '.' +
-        new Date().getMilliseconds().toString().padStart(3, '0');
-    (0, fs_2.appendFileSync)(`../logs/${TIME}.log`, `[${t}] ${message}\n`);
 }
 //# sourceMappingURL=bot.js.map

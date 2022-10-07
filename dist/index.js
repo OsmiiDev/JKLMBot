@@ -21,5 +21,5 @@ class Profile {
     }
 }
 exports.Profile = Profile;
-new bot_1.BotInstance(gc);
+new bot_1.BotInstance('VHCJ');
 //# sourceMappingURL=index.js.map

@@ -1,10 +1,13 @@
-import {readFileSync} from 'fs';
 import {Profile} from '.';
 import axios from 'axios';
 import {client, connection, Message} from 'websocket';
-import {appendFileSync} from 'fs';
+import {appendFileSync, writeFileSync, readFileSync} from 'fs';
+
+const IMITATE_HUMAN = false;
 
 const WebSocketClient = client;
+
+const TIME = new Date().getTime();
 
 export const words = readFileSync('../assets/words.txt').toString().split('\n').map((word: string) => word.toLowerCase());
 
@@ -55,8 +58,18 @@ export class BotInstance {
             this.gameSocket = new GameSocket(`wss://${bird}.jklm.fun/socket.io/?EIO=4&transport=websocket`, this);
         })();
     }
-}
 
+    /**
+     * @param {string} message The message to send
+     */
+    log(message) {
+        const t = new Date().getHours().toString().padStart(2, '0') + ':' +
+                new Date().getMinutes().toString().padStart(2, '0') + ':' +
+                new Date().getSeconds().toString().padStart(2, '0') + '.' +
+                new Date().getMilliseconds().toString().padStart(3, '0');
+        appendFileSync(`../logs/${TIME}-${this.game}.log`, `[${t}] ${message}\n`);
+    }
+}
 
 /**
  * Functions to handle packets from the main socket
@@ -105,7 +118,7 @@ export class MainSocket {
 
     /** @param {number} op The opcode to send @param {(string | number)[]} data The data to send  */
     send(op: number, ...data: Array<unknown> | undefined) {
-        log(`↑1 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
+        this.bot.log(`↑1 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
         this.socketClient.send(`${op.toString()}${data && data.length > 0 ? JSON.stringify(data) : ''}`);
     }
 
@@ -167,7 +180,14 @@ export class MainSocket {
                     console.log(args, flags);
 
                     const syl = args.s ? args.s.toLowerCase() : this.bot.gameSocket.syllable;
-                    const valid = findWord(syl, words).sort(() => .5 - Math.random()).map((val) => val.toUpperCase());
+                    let valid = findWord(syl, words).sort(() => .5 - Math.random()).map((val) => val.toUpperCase());
+
+                    if (!syl) {
+                        this.send(42, 'chat', 'No syllable provided!');
+                        return;
+                    }
+                    if (args.sort === 'length') valid = valid.sort((a, b) => b.length - a.length);
+                    if (args.sort === 'alphabetical') valid = valid.sort((a, b) => a.localeCompare(b));
 
                     this.send(42, 'chat', `Words for ${syl.toUpperCase()}: ${valid.slice(0, 10).join(', ')}`.substring(0, 300));
                 }
@@ -221,7 +241,7 @@ export class GameSocket {
                 if (!('utf8Data' in message)) return;
 
                 const [opcode, data] = message.utf8Data.match(/(\d+)(.*)/).slice(1);
-                log(`↓2 ${opcode}${data}`);
+                bot.log(`↓2 ${opcode}${data}`);
 
                 const op = Number(opcode);
                 const json = data ? JSON.parse(`${data}`) : {};
@@ -238,7 +258,7 @@ export class GameSocket {
 
     /** @param {number} op The opcode to send @param {(string | number)[]} data The data to send  */
     send(op: number, ...data: Array<unknown> | undefined) {
-        log(`↑2 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
+        this.bot.log(`↑2 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
         this.socketClient.send(`${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
     }
 
@@ -265,6 +285,10 @@ export class GameSocket {
 
     /** @param {object} data */
     op42(data) {
+        if (data[0] === 'clearUsedWords') {
+            this.currentWords = words.slice();
+        }
+
         if (data[0] === 'setup') {
             const {milestone, selfPeerId} = data[1];
             this.peerId = selfPeerId;
@@ -296,11 +320,13 @@ export class GameSocket {
         if (data[0] === 'correctWord') {
             const {playerPeerId, bonusLetters} = data[1];
 
+            this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, ''));
+
             if (!words.includes(this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, ''))) {
                 console.log(`[!] New word: ${this.lastSeenWords[playerPeerId]}`);
                 words.push(this.lastSeenWords[playerPeerId]);
 
-                appendFileSync('../assets/words.txt', `\n${this.lastSeenWords[playerPeerId]}`);
+                appendFileSync('../assets/words.txt', `\n${this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, '')}`);
             }
 
             if (playerPeerId === this.peerId) this.mybonusletters = this.bonus.filter((letter) => !bonusLetters.includes(letter));
@@ -310,13 +336,17 @@ export class GameSocket {
             const [peer, reason] = data.slice(1);
 
             if (reason === 'alreadyUsed') {
-                console.log(this.lastSeenWords[peer], 'was already used');
-                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer]);
+                console.log('[!]', this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''), 'was already used');
+                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''));
+                console.log(this.currentWords.includes(this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, '')));
             }
 
-            if (reason === 'notInDictionary') {
-                console.log(this.lastSeenWords[peer], 'is not in the dictionary');
-                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer]);
+            if (reason === 'notInDictionary' && peer === this.peerId) {
+                console.log('[!]', this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''), 'is not in the dictionary');
+                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer].replace(/[^a-zA-Z-]/g, ''));
+
+                const w = readFileSync('../assets/words.txt', 'utf-8').split('\n').filter((word) => word !== this.lastSeenWords[peer]).map((word) => word.toLowerCase()).join('\n');
+                writeFileSync('../assets/words.txt', w);
             }
 
             if (peer === this.peerId) {
@@ -341,15 +371,13 @@ export class GameSocket {
     async submit() {
         const words: string[] = findWord(this.syllable, this.currentWords);
 
-        console.log(this.mybonusletters);
-
         let max = 0;
         let maxCandidate = [];
 
         for (const word of words) {
-            let score = 0;
+            let score = word.length;
             this.mybonusletters.forEach((letter) => {
-                if (word.includes(letter)) score++;
+                if (word.includes(letter)) score += 5;
             });
 
             if (score > max) {
@@ -366,15 +394,19 @@ export class GameSocket {
 
             return;
         }
+
         const chosenWord = maxCandidate[Math.floor(Math.random() * maxCandidate.length)];
-        await sleep(200);
 
-        for (let i = 0; i < chosenWord.length; i++) {
-            this.send(42, 'setWord', chosenWord.substring(0, i + 1), false);
-            await sleep(Math.random() * 20 + 65);
+        if (IMITATE_HUMAN) {
+            await sleep(200);
+
+            for (let i = 0; i < chosenWord.length; i++) {
+                this.send(42, 'setWord', chosenWord.substring(0, i + 1), false);
+                await sleep(Math.random() * 20 + 65);
+            }
+
+            await sleep(Math.random() * 20 + 40);
         }
-
-        await sleep(Math.random() * 20 + 40);
 
         this.send(42, 'setWord', chosenWord, true);
     }
@@ -388,17 +420,4 @@ export class GameSocket {
  */
 function findWord(syllable, currentWords): string[] {
     return currentWords.filter((word) => word.includes(syllable));
-}
-
-const TIME = new Date().getTime();
-
-/**
- * @param {string} message The message to log
- */
-function log(message) {
-    const t = new Date().getHours().toString().padStart(2, '0') + ':' +
-            new Date().getMinutes().toString().padStart(2, '0') + ':' +
-            new Date().getSeconds().toString().padStart(2, '0') + '.' +
-            new Date().getMilliseconds().toString().padStart(3, '0');
-    appendFileSync(`../logs/${TIME}.log`, `[${t}] ${message}\n`);
 }
