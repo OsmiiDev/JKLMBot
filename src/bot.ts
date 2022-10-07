@@ -2,6 +2,7 @@ import {readFileSync} from 'fs';
 import {Profile} from '.';
 import axios from 'axios';
 import {client, connection, Message} from 'websocket';
+import {appendFileSync} from 'fs';
 
 const WebSocketClient = client;
 
@@ -37,7 +38,6 @@ export class BotInstance {
         this.profile = new Profile();
 
         (async () => {
-            await axios.get(`https://jklm.fun/${gameId}`);
             const response = await axios.post('https://jklm.fun/api/joinRoom', {
                 roomCode: gameId,
             });
@@ -95,6 +95,7 @@ export class MainSocket {
                 if (op === 0) this.op0(json);
                 if (op === 2) this.op2(json);
                 if (op === 40) this.op40(json);
+                if (op === 42) this.op42(json);
                 if (op === 430) this.op430(json);
             });
         });
@@ -104,7 +105,7 @@ export class MainSocket {
 
     /** @param {number} op The opcode to send @param {(string | number)[]} data The data to send  */
     send(op: number, ...data: Array<unknown> | undefined) {
-        console.log(`↑1 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
+        log(`↑1 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
         this.socketClient.send(`${op.toString()}${data && data.length > 0 ? JSON.stringify(data) : ''}`);
     }
 
@@ -127,12 +128,51 @@ export class MainSocket {
         this.send(420, 'joinRoom', {
             roomCode: this.game,
             userToken: this.profile.getToken(),
-            nickname: 'Osmii',
-            picture: readFileSync('../assets/profile.txt').toString(),
+            nickname: 'Iridium',
             language: 'en-US',
         });
 
         data;
+    }
+
+    /** @param {object} data */
+    op42(data) {
+        if (data[0] === 'chat') {
+            // @TODO Process commands
+            const [peer, message] = data.slice(1);
+            console.log(message);
+
+            if (message.startsWith('.')) {
+                const [command, ...arg] = message.substring(1).split(' ');
+                const args: {[key: string]: string} = {}; const flags: string[] = [];
+
+                if (arg && arg.length > 0) {
+                    for (let i = 0; i < arg.length; i++) {
+                        if (arg[i] === '') arg.splice(i, 1);
+
+                        if (arg[i].startsWith('--')) {
+                            flags.push(args[i].substring(2));
+                            arg.splice(i, 1);
+                        } else if (arg[i].startsWith('-') && arg[i].length > 1 && i !== arg.length - 1) {
+                            args[arg[i].substring(1)] = arg[i + 1];
+                        }
+                    }
+                }
+
+                if (command === 'ping') {
+                    this.send(42, 'chat', `Pong! ${peer.nickname}`);
+                }
+
+                if (command === 'c') {
+                    console.log(args, flags);
+
+                    const syl = args.s ? args.s.toLowerCase() : this.bot.gameSocket.syllable;
+                    const valid = findWord(syl, words).sort(() => .5 - Math.random()).map((val) => val.toUpperCase());
+
+                    this.send(42, 'chat', `Words for ${syl.toUpperCase()}: ${valid.slice(0, 10).join(', ')}`.substring(0, 300));
+                }
+            }
+        }
     }
 
     /** @param {object} data */
@@ -158,6 +198,9 @@ export class GameSocket {
 
     currentWords: string[] = words.slice();
 
+    bonus: string[] = 'abcdefghijklmnopqrstuvwy'.split('');
+    mybonusletters: string [] = 'abcdefghijklmnopqrstuvwy'.split('');
+
     syllable: string;
 
     /**
@@ -178,7 +221,7 @@ export class GameSocket {
                 if (!('utf8Data' in message)) return;
 
                 const [opcode, data] = message.utf8Data.match(/(\d+)(.*)/).slice(1);
-                console.log('↓2', `${opcode}${data}`);
+                log(`↓2 ${opcode}${data}`);
 
                 const op = Number(opcode);
                 const json = data ? JSON.parse(`${data}`) : {};
@@ -195,7 +238,7 @@ export class GameSocket {
 
     /** @param {number} op The opcode to send @param {(string | number)[]} data The data to send  */
     send(op: number, ...data: Array<unknown> | undefined) {
-        console.log(`↑2 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
+        log(`↑2 ${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
         this.socketClient.send(`${op.toString()}${data.length > 0 ? JSON.stringify(data) : ''}`);
     }
 
@@ -238,30 +281,41 @@ export class GameSocket {
         }
 
         if (data[0] === 'setMilestone') {
-            const {name, currentPlayerPeerId} = data[1];
+            const {name, currentPlayerPeerId, syllable} = data[1];
             if (name === 'seating') {
                 this.send(42, 'joinRound');
                 this.currentWords = words.slice();
             }
 
             if (name === 'round' && currentPlayerPeerId === this.peerId) {
+                this.syllable = syllable;
                 this.submit();
             }
         }
 
         if (data[0] === 'correctWord') {
-            const {playerPeerId} = data[1];
+            const {playerPeerId, bonusLetters} = data[1];
 
             if (!words.includes(this.lastSeenWords[playerPeerId].replace(/[^a-zA-Z-]/g, ''))) {
                 console.log(`[!] New word: ${this.lastSeenWords[playerPeerId]}`);
                 words.push(this.lastSeenWords[playerPeerId]);
+
+                appendFileSync('../assets/words.txt', `\n${this.lastSeenWords[playerPeerId]}`);
             }
+
+            if (playerPeerId === this.peerId) this.mybonusletters = this.bonus.filter((letter) => !bonusLetters.includes(letter));
         }
 
         if (data[0] === 'failWord') {
             const [peer, reason] = data.slice(1);
 
             if (reason === 'alreadyUsed') {
+                console.log(this.lastSeenWords[peer], 'was already used');
+                this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer]);
+            }
+
+            if (reason === 'notInDictionary') {
+                console.log(this.lastSeenWords[peer], 'is not in the dictionary');
                 this.currentWords = this.currentWords.filter((word) => word !== this.lastSeenWords[peer]);
             }
 
@@ -277,20 +331,50 @@ export class GameSocket {
             if (peer === this.peerId) {
                 this.submit();
             }
+
+            // const mapped = findWord(syllable, words).map((word) => word.toUpperCase()).slice(0, 10);
+            // this.bot.mainSocket.send(42, 'chat', `Words for ${this.syllable}: ${mapped.join(', ')}`);
         }
     }
 
     /** */
     async submit() {
-        const words: string[] = findWord(this.syllable);
+        const words: string[] = findWord(this.syllable, this.currentWords);
 
-        const chosenWord = words[Math.floor(Math.random() * words.length)];
+        console.log(this.mybonusletters);
+
+        let max = 0;
+        let maxCandidate = [];
+
+        for (const word of words) {
+            let score = 0;
+            this.mybonusletters.forEach((letter) => {
+                if (word.includes(letter)) score++;
+            });
+
+            if (score > max) {
+                max = score;
+                maxCandidate = [word];
+            } else if (score === max) {
+                maxCandidate.push(word);
+            }
+        }
+
+        if (maxCandidate.length === 0) {
+            this.bot.mainSocket.send(42, 'chat', `No words for ${this.syllable}`);
+            this.send(42, 'setWord', '💥', true);
+
+            return;
+        }
+        const chosenWord = maxCandidate[Math.floor(Math.random() * maxCandidate.length)];
         await sleep(200);
 
         for (let i = 0; i < chosenWord.length; i++) {
             this.send(42, 'setWord', chosenWord.substring(0, i + 1), false);
-            await sleep(50);
+            await sleep(Math.random() * 20 + 65);
         }
+
+        await sleep(Math.random() * 20 + 40);
 
         this.send(42, 'setWord', chosenWord, true);
     }
@@ -299,8 +383,22 @@ export class GameSocket {
 /**
  * Finds words that contain a syllable
  * @param {string} syllable The syllable to search for
+ * @param {string[]} currentWords The words to search in
  * @return {string[]} The words that start with the syllable
  */
-function findWord(syllable) {
-    return words.filter((word) => word.includes(syllable));
+function findWord(syllable, currentWords): string[] {
+    return currentWords.filter((word) => word.includes(syllable));
+}
+
+const TIME = new Date().getTime();
+
+/**
+ * @param {string} message The message to log
+ */
+function log(message) {
+    const t = new Date().getHours().toString().padStart(2, '0') + ':' +
+            new Date().getMinutes().toString().padStart(2, '0') + ':' +
+            new Date().getSeconds().toString().padStart(2, '0') + '.' +
+            new Date().getMilliseconds().toString().padStart(3, '0');
+    appendFileSync(`../logs/${TIME}.log`, `[${t}] ${message}\n`);
 }

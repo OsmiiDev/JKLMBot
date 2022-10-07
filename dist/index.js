@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Profile = void 0;
 const bot_1 = require("./bot");
 const crypto_1 = require("crypto");
+const gc = process.argv[2];
 class Profile {
     constructor() {
         this._token = '';
@@ -20,5 +21,5 @@ class Profile {
     }
 }
 exports.Profile = Profile;
-new bot_1.BotInstance('DWGF');
+new bot_1.BotInstance(gc);
 //# sourceMappingURL=index.js.map

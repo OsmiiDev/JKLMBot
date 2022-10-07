@@ -20,6 +20,7 @@ export declare class MainSocket {
     op0(data: any): void;
     op2(data: any): void;
     op40(data: any): Promise<void>;
+    op42(data: any): void;
     op430(data: any): void;
 }
 export declare class GameSocket {
@@ -33,6 +34,8 @@ export declare class GameSocket {
         [key: string]: string;
     };
     currentWords: string[];
+    bonus: string[];
+    mybonusletters: string[];
     syllable: string;
     constructor(url: string, bot: BotInstance);
     send(op: number, ...data: Array<unknown> | undefined): void;

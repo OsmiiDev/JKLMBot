@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "start": "tsc && cd dist && node . && cd .."
+    "start": "tsc && cd dist && node . VHCJ && cd .."
   },
   "dependencies": {
     "@types/websocket": "^1.0.5",
